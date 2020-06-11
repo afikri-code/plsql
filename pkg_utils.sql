@@ -14,6 +14,8 @@ CREATE OR REPLACE PACKAGE PKG_UTILS AS
     PIPELINED;
   -- delete data from a table using partition exchange (simple example)  
   PROCEDURE pc_del_data_using_prtexchg(p_trgt_tbl VARCHAR2, p_where_cond VARCHAR2, p_tblspace VARCHAR2, p_dop VARCHAR2 DEFAULT '4');
+  -- example to read a sql behind a ref cursor
+  PROCEDURE pc_exp_read_sql_refcurs;
 END PKG_UTILS;
 /
 CREATE OR REPLACE PACKAGE BODY PKG_UTILS AS
@@ -105,6 +107,36 @@ EXCEPTION
     LOG(SQLERRM);
     RAISE;
 END pc_del_data_using_prtexchg;
+
+  --========================================================================================================
+  -- Example to read the sql behind a ref cursor
+  -- remember grant select any dictionary TO user: in order to be able to use the v$ view in the procedure
+  --!! select catalog role is a role, roles are not enabled during the compilation of plsql/views and are 
+  -- not ever enabled during the execution of definers rights procedures
+  -- so, select catalog role would let you write queries in sqlplus for example, but not create a procedure (as select any dictionary, the system privilege, does) 
+  --========================================================================================================
+PROCEDURE pc_exp_read_sql_refcurs IS
+  v_refcurs SYS_REFCURSOR;
+  v_text dual.dummy%TYPE;
+BEGIN
+  -- create dummy ref cursor
+  OPEN v_refcurs FOR 'select dummy from dual where dummy = :1 and dummy = :2 and rownum < 11' USING 'X','Y';
+  LOOP
+    FETCH v_refcurs INTO v_text;
+    EXIT WHEN v_refcurs%NOTFOUND;
+  END LOOP;
+  
+  -- before closing the cursor, 
+    FOR rec IN (SELECT s.sql_fulltext,oc.child_address FROM v$sql s JOIN  v$open_cursor oc ON s.sql_id = oc.sql_id 
+      WHERE oc.SID = sys_context('userenv','sid') AND lower(s.sql_text) NOT LIKE '%v$%') LOOP
+      dbms_output.put_line(rec.sql_fulltext);
+      FOR r IN (SELECT * FROM v$SQL_BIND_CAPTURE WHERE child_address =  rec.child_address) LOOP
+        dbms_output.put_line(r.name || ' = '  || r.value_string);
+      END LOOP;
+      dbms_output.put_line(RPAD('=',50,'='));
+    END LOOP; 
+  CLOSE v_refcurs;
+END;
 
 END PKG_UTILS;
 /
