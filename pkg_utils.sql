@@ -16,6 +16,8 @@ CREATE OR REPLACE PACKAGE PKG_UTILS AS
   PROCEDURE pc_del_data_using_prtexchg(p_trgt_tbl VARCHAR2, p_where_cond VARCHAR2, p_tblspace VARCHAR2, p_dop VARCHAR2 DEFAULT '4');
   -- example to read a sql behind a ref cursor
   PROCEDURE pc_exp_read_sql_refcurs;
+  --example to write the result of a query to a csv file
+  PROCEDURE write_to_file(dirnam varchar2, filnam varchar2, p_sql VARCHAR2);
 END PKG_UTILS;
 /
 CREATE OR REPLACE PACKAGE BODY PKG_UTILS AS
@@ -137,6 +139,59 @@ BEGIN
     END LOOP; 
   CLOSE v_refcurs;
 END;
+--========================================================================================================
+-- write dynamically the result of query to csv file
+-- call example: write_to_file('TMP_DIR','test.csv','SELECT * FROM TBL_B_0 WHERE ROWNUM < 10');
+--========================================================================================================
+PROCEDURE write_to_file(dirnam varchar2, filnam varchar2, p_sql VARCHAR2)
+    IS
+    v_columns dbms_sql.desc_tab;
+    v_cursor_id integer;
+    v_col_cnt integer;
+    v_line VARCHAR2(32767) ;
+    v_sql VARCHAR2(32767);
+    v_delimiter CHAR(1) := ';';
+    v_separator CHAR(1) := '"';
+    lf CONSTANT VARCHAR2(1) := chr(10);
+    export_charset VARCHAR2(30) := 'AL32UTF8';
+    char_set VARCHAR2(30) := 'AL32UTF8';
+BEGIN
+  v_cursor_id := dbms_sql.open_cursor;
+  dbms_sql.parse(v_cursor_id, p_sql, dbms_sql.native);
+  dbms_sql.describe_columns(v_cursor_id, v_col_cnt, v_columns);
+  dbms_sql.close_cursor(v_cursor_id);
+  for i in 1 .. v_columns.count LOOP
+    v_line := v_line||'||'''||v_separator||''||v_delimiter||''||v_separator||'''||curtype.'||v_columns(i).col_name;
+  end loop;
+  v_line := ''''||v_separator||'''||'||LTRIM(v_line,'||'''||v_separator||''||v_delimiter||''||v_separator||'''||')||'||'''||v_separator||'''';
+  v_sql := 'declare'||CHR(10)||
+           '  CURSOR mycur IS '||p_sql||';'||lf||
+           '  curtype mycur%ROWTYPE;'||lf||
+           '  fh utl_file.file_type;'||lf||
+           'begin'||lf||
+           '  fh := utl_file.fopen(''' || dirnam || ''', ''' || filnam || ''', ''W'', 32767);'||lf||
+           '  OPEN mycur;'||lf||
+           '  LOOP'||lf||
+           '  FETCH mycur INTO curtype;'||lf||
+           '  EXIT WHEN mycur%NOTFOUND;'||lf||
+           '  utl_file.put_line(fh, convert('||v_line||', ''' || export_charset || ''', ''' || char_set || '''), TRUE);'||lf||
+           '  END LOOP;'||lf||
+           '  CLOSE mycur;'||lf||
+           '  utl_file.fclose(fh);'||lf||
+           '  dbms_output.put_line(''done'');'||lf||
+           'exception'||lf||
+           '  when others then'||lf||
+           '    dbms_output.put_line(sqlerrm);'||lf||
+           '    begin'||lf||
+           '      utl_file.fclose(fh);'||lf||
+           '      exception'||lf||
+           '  when others then'||lf||
+           '    dbms_output.put_line(sqlerrm);'||lf||
+           '  end;'||lf||
+           'end;';
+   -- dbms_output.put_line(v_sql);
+   EXECUTE IMMEDIATE v_sql;
+END write_to_file;
 
 END PKG_UTILS;
 /
