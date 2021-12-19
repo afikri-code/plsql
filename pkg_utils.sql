@@ -18,6 +18,18 @@ CREATE OR REPLACE PACKAGE PKG_UTILS AS
   PROCEDURE pc_exp_read_sql_refcurs;
   --example to write the result of a query to a csv file
   PROCEDURE write_to_file(dirnam varchar2, filnam varchar2, p_sql VARCHAR2);
+  --estimate size of result of a sql, when exported as csv
+  FUNCTION fu_estimate_size(p_sql VARCHAR2, p_unit NUMBER DEFAULT 2) RETURN NUMBER;
+  ------
+  PROCEDURE pc_exp_tbl_using_dpmp(p_schema VARCHAR2, p_tbl_list VARCHAR2, p_exp_job_name VARCHAR2, p_dmp_file VARCHAR2,
+             p_exp_log VARCHAR2, p_dbdir VARCHAR2);
+  ---
+  PROCEDURE pc_exp_schema_using_dpmp(p_schema VARCHAR2,  p_exp_job_name VARCHAR2, p_dmp_file VARCHAR2, p_exp_log VARCHAR2, p_dbdir VARCHAR2,
+    p_exclude_stat BOOLEAN DEFAULT FALSE);
+  -- imp using dblink
+  PROCEDURE pc_imp_schema_using_dblink(p_schema VARCHAR2,  p_exp_job_name VARCHAR2, p_db_link VARCHAR2, 
+    p_exp_log VARCHAR2, p_dbdir VARCHAR2,
+    p_exclude_stat BOOLEAN DEFAULT FALSE)
 END PKG_UTILS;
 /
 CREATE OR REPLACE PACKAGE BODY PKG_UTILS AS
@@ -192,6 +204,131 @@ BEGIN
    -- dbms_output.put_line(v_sql);
    EXECUTE IMMEDIATE v_sql;
 END write_to_file;
+
+--estimate size of result of a sql, when exported as csv
+  FUNCTION fu_estimate_size(p_sql VARCHAR2, p_unit NUMBER DEFAULT 2) RETURN NUMBER
+  IS
+    v_columns dbms_sql.desc_tab;
+    v_cursor_id integer;
+    v_col_cnt integer;
+    v_line VARCHAR2(32767) ;
+    v_delimiter CHAR(1) := ';';
+    v_separator CHAR(1) := '"';
+    v_ret NUMBER;
+  BEGIN
+    v_cursor_id := dbms_sql.open_cursor;
+    dbms_sql.parse(v_cursor_id, p_sql, dbms_sql.native);
+    dbms_sql.describe_columns(v_cursor_id, v_col_cnt, v_columns);
+    dbms_sql.close_cursor(v_cursor_id);
+    for i in 1 .. v_columns.count LOOP
+      v_line := v_columns(i).col_name||'||'''||v_separator||v_delimiter||v_separator||'''||'||v_line;
+    end loop;
+    v_line := ''''||v_separator||'''||'||rtrim(v_line,'||'''||v_separator||v_delimiter||v_separator||'''||')||'||'''||v_separator||'''';
+    dbms_output.put_line( 'select sum(1+lengthb('||v_line||'))/1024/1024 from ('||p_sql||')');
+    EXECUTE IMMEDIATE 'select sum(1+lengthb('||v_line||'))/1024/1024 from ('||p_sql||')' INTO v_ret;
+    RETURN v_ret;
+  END fu_estimate_size;
+  -- pc_exp_tbl_using_dpmp(p_schema -> 'DUMMY_USER', p_tbl_list -> 'PARTITIONED_TBL', p_exp_job_name -> 'exp_data7',
+  /*
+  BEGIN
+    pkg_utils.pc_exp_schema_using_dpmp(p_schema       => 'USR_DUMMY',
+                                       p_exp_job_name => 'EXP_DUMMY_SCHEMA',
+                                       p_dmp_file     => 'EXP_DUMMY',
+                                       p_exp_log      => 'EXP_DUMMY_LOG',
+                                       p_dbdir        => 'EXP_DIR');
+  END ;
+  */
+  --  p_dmp_file ->  'test.dmp', v_exp_log 'exp_masked_data.log', p_dbdir -> 'EXP_DIR')
+  PROCEDURE pc_exp_tbl_using_dpmp(p_schema VARCHAR2, p_tbl_list VARCHAR2, p_exp_job_name VARCHAR2, p_dmp_file VARCHAR2,
+             p_exp_log VARCHAR2, p_dbdir VARCHAR2) IS
+    h1 NUMBER;
+    v_job_state user_datapump_jobs.state%TYPE;
+  BEGIN
+
+    h1 := dbms_datapump.open(operation => 'EXPORT',job_mode => 'TABLE',job_name => p_exp_job_name);
+        dbms_output.put_line(1);
+    dbms_datapump.add_file(handle => h1, filename => p_dmp_file ,directory => p_dbdir, reusefile  => 1);
+        dbms_output.put_line(2);
+    dbms_datapump.add_file(handle => h1, filename => p_exp_log, directory => p_dbdir, filetype => dbms_datapump.KU$_FILE_TYPE_LOG_FILE);
+        dbms_output.put_line(3);
+    dbms_datapump.metadata_filter(h1,'NAME_EXPR', ' IN ('''||p_tbl_list||''')');
+    DBMS_DATAPUMP.metadata_filter(h1,'SCHEMA_EXPR',  'IN ('''||p_schema||''')');
+    dbms_output.put_line(4);
+    --DBMS_DATAPUMP.DATA_FILTER(handle => h1,Name => 'SUBQUERY',value => 'where desc_key = ''20200103''', table_name => 'PARTITIONED_TBL');
+    dbms_output.put_line(5);
+    dbms_datapump.start_job(h1);
+    dbms_datapump.wait_for_job(h1, v_job_state);
+  EXCEPTION
+    WHEN others THEN
+      raise;
+  END pc_exp_tbl_using_dpmp;
+  
+  /*
+  BEGIN
+    pkg_utils.pc_exp_schema_using_dpmp(p_schema       => 'USR_DUMMY',
+                                       p_exp_job_name => 'EXP_DUMMY_SCHEMA',
+                                       p_dmp_file     => 'EXP_DUMMY',
+                                       p_exp_log      => 'EXP_DUMMY_LOG',
+                                       p_dbdir        => 'EXP_DIR');
+  END ;
+  
+  EXCLUDE dbms_datapump.metadata_filter(l_dp_handle, 'EXCLUDE_PATH_EXPR', 'IN (''INDEX'', ''SYNONYMS'', ''GRANTS'', ''STATISTICS'')');
+  */
+  PROCEDURE pc_exp_schema_using_dpmp(p_schema VARCHAR2,  p_exp_job_name VARCHAR2, p_dmp_file VARCHAR2, 
+    p_exp_log VARCHAR2, p_dbdir VARCHAR2,
+    p_exclude_stat BOOLEAN DEFAULT FALSE)
+  IS
+    h1 NUMBER;
+    v_job_state user_datapump_jobs.state%TYPE;
+  BEGIN
+    h1 := dbms_datapump.open(operation => 'EXPORT',job_mode => 'SCHEMA',job_name => p_exp_job_name);
+        dbms_output.put_line(1);
+    dbms_datapump.add_file(handle => h1, filename => p_dmp_file ,directory => p_dbdir, reusefile  => 1);
+        dbms_output.put_line(2);
+    dbms_datapump.add_file(handle => h1, filename => p_exp_log, directory => p_dbdir, filetype => dbms_datapump.KU$_FILE_TYPE_LOG_FILE);
+        dbms_output.put_line(3);
+    DBMS_DATAPUMP.metadata_filter(h1,'SCHEMA_EXPR',  'IN ('''||p_schema||''')');
+    dbms_output.put_line(4);
+    IF p_exclude_stat THEN
+      DBMS_DATAPUMP.METADATA_FILTER(h1,
+                                'EXCLUDE_PATH_EXPR',
+                                'IN (''STATISTICS'')');
+    END IF;
+    dbms_output.put_line(5);
+    dbms_datapump.start_job(h1);
+    dbms_datapump.wait_for_job(h1, v_job_state);
+    
+  END pc_exp_schema_using_dpmp; 
+  /* import schemas using db link */ 
+  PROCEDURE pc_imp_schema_using_dblink(p_schema VARCHAR2,  p_exp_job_name VARCHAR2, p_db_link VARCHAR2, 
+    p_exp_log VARCHAR2, p_dbdir VARCHAR2,
+    p_exclude_stat BOOLEAN DEFAULT FALSE)
+  IS
+    h1 NUMBER;
+    v_job_state user_datapump_jobs.state%TYPE;
+  BEGIN
+    LOG(p_db_link);
+    LOG(p_exp_job_name);
+    LOG(p_dbdir);
+    LOG(p_exp_log);
+    h1 := dbms_datapump.open(operation => 'IMPORT',job_mode => 'SCHEMA',job_name => p_exp_job_name,remote_link => p_db_link);
+        dbms_output.put_line(1);
+   
+    dbms_datapump.add_file(handle => h1, filename => p_exp_log, directory => p_dbdir, filetype => dbms_datapump.KU$_FILE_TYPE_LOG_FILE);
+        dbms_output.put_line(3);
+   -- DBMS_DATAPUMP.metadata_filter(h1,'SCHEMA_EXPR',  'IN ('''||p_schema||''')');
+    DBMS_DATAPUMP.metadata_filter(h1,'SCHEMA_EXPR',  'IN ('||p_schema||')');
+    dbms_output.put_line(4);
+    IF p_exclude_stat THEN
+      DBMS_DATAPUMP.METADATA_FILTER(h1,
+                                'EXCLUDE_PATH_EXPR',
+                                'IN (''STATISTICS'')');
+    END IF;
+    dbms_output.put_line(5);
+    dbms_datapump.start_job(h1);
+    dbms_datapump.wait_for_job(h1, v_job_state);
+    
+  END pc_imp_schema_using_dblink; 
 
 END PKG_UTILS;
 /
